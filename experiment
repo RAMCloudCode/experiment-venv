@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WORK_DIR="."
+ENV_DIR=".experiment"
+NOTEBOOK="experiment.ipynb"
+REQUIREMENTS=""
+START_DIR="$PWD"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  experiment [options] [working-directory]
+
+Create an isolated Python workspace for rapid local experimentation.
+Sets up a virtual environment, Jupyter notebook, .env file, and optional dependencies.
+
+Options:
+  -e, --env ENV_DIR
+      Virtual environment directory.
+
+  -n, --notebook NOTEBOOK
+      Notebook filename.
+
+  -r, --requirements REQUIREMENTS
+      Requirements file.
+
+  -h, --help
+      Show this help.
+
+Defaults:
+  working-directory: current directory
+  environment:       .experiment
+  notebook:          experiment.ipynb
+  requirements:      requirements.txt in the working directory, when present
+
+Examples:
+  experiment
+  experiment ~/project/experiments
+  experiment --env .api-test --notebook api-test.ipynb
+  experiment --requirements ../shared/requirements.txt ~/project/experiments
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -e|--env)
+      if [[ $# -lt 2 ]]; then
+        printf 'Option %s requires an argument.\n' "$1" >&2
+        exit 1
+      fi
+      ENV_DIR="$2"
+      shift 2
+      ;;
+
+    --env=*)
+      ENV_DIR="${1#*=}"
+      shift
+      ;;
+
+    -n|--notebook)
+      if [[ $# -lt 2 ]]; then
+        printf 'Option %s requires an argument.\n' "$1" >&2
+        exit 1
+      fi
+      NOTEBOOK="$2"
+      shift 2
+      ;;
+
+    --notebook=*)
+      NOTEBOOK="${1#*=}"
+      shift
+      ;;
+
+    -r|--requirements)
+      if [[ $# -lt 2 ]]; then
+        printf 'Option %s requires an argument.\n' "$1" >&2
+        exit 1
+      fi
+      REQUIREMENTS="$2"
+      shift 2
+      ;;
+
+    --requirements=*)
+      REQUIREMENTS="${1#*=}"
+      shift
+      ;;
+
+    -h|--help)
+      usage
+      exit 0
+      ;;
+
+    --)
+      shift
+      break
+      ;;
+
+    -*)
+      printf 'Unknown option: %s\n' "$1" >&2
+      usage >&2
+      exit 1
+      ;;
+
+    *)
+      break
+      ;;
+  esac
+done
+
+if [[ $# -gt 1 ]]; then
+  echo "Too many positional arguments." >&2
+  usage >&2
+  exit 1
+fi
+
+WORK_DIR="${1:-$WORK_DIR}"
+
+# Explicit requirements paths are resolved relative to the directory from
+# which the command was invoked.
+if [[ -n "$REQUIREMENTS" && "$REQUIREMENTS" != /* ]]; then
+  REQUIREMENTS="$START_DIR/$REQUIREMENTS"
+fi
+
+mkdir -p "$WORK_DIR"
+cd "$WORK_DIR"
+
+WORK_DIR="$(pwd -P)"
+
+# When -r is omitted, use requirements.txt from the working directory.
+if [[ -z "$REQUIREMENTS" && -f requirements.txt ]]; then
+  REQUIREMENTS="requirements.txt"
+fi
+
+if [[ -n "$REQUIREMENTS" && ! -f "$REQUIREMENTS" ]]; then
+  printf 'Requirements file not found: %s\n' "$REQUIREMENTS" >&2
+  exit 1
+fi
+
+if [[ -e "$ENV_DIR" ]]; then
+  printf 'Environment already exists: %s\n' "$ENV_DIR" >&2
+  exit 1
+fi
+
+if [[ -e "$NOTEBOOK" ]]; then
+  printf 'Notebook already exists: %s\n' "$NOTEBOOK" >&2
+  exit 1
+fi
+
+cleanup_failed_environment() {
+  local status=$?
+
+  if [[ $status -ne 0 && -d "$ENV_DIR" ]]; then
+    printf '\nSetup failed. Removing incomplete environment: %s\n' \
+      "$ENV_DIR" >&2
+    rm -rf -- "$ENV_DIR"
+  fi
+
+  exit "$status"
+}
+
+trap cleanup_failed_environment EXIT
+
+echo "Working directory: $(pwd)"
+echo "Creating virtual environment: $ENV_DIR"
+python3 -m venv "$ENV_DIR"
+
+PYTHON="$ENV_DIR/bin/python"
+
+echo "Upgrading pip..."
+"$PYTHON" -m pip install --upgrade pip
+
+echo "Installing experiment dependencies..."
+"$PYTHON" -m pip install \
+  ipykernel \
+  python-dotenv \
+  jupyterlab
+
+if [[ -n "$REQUIREMENTS" ]]; then
+  echo "Installing requirements from: $REQUIREMENTS"
+  "$PYTHON" -m pip install -r "$REQUIREMENTS"
+fi
+
+if [[ ! -e .env ]]; then
+  touch .env
+  ENV_CREATED=true
+else
+  ENV_CREATED=false
+fi
+
+GITIGNORE=".gitignore"
+touch "$GITIGNORE"
+
+append_gitignore_entry() {
+  local entry="$1"
+
+  if ! grep -Fxq -- "$entry" "$GITIGNORE"; then
+    printf '%s\n' "$entry" >> "$GITIGNORE"
+  fi
+}
+
+append_gitignore_entry "$ENV_DIR/"
+append_gitignore_entry ".env"
+append_gitignore_entry ".ipynb_checkpoints/"
+
+cat > "$NOTEBOOK" <<'EOF'
+{
+  "cells": [
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "id": "environment-setup",
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "import os\n",
+        "from dotenv import load_dotenv\n",
+        "\n",
+        "load_dotenv()"
+      ]
+    }
+  ],
+  "metadata": {
+    "kernelspec": {
+      "display_name": "Python 3",
+      "language": "python",
+      "name": "python3"
+    },
+    "language_info": {
+      "name": "python"
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
+EOF
+
+trap - EXIT
+
+echo
+printf 'Working directory: %s\n' "$(pwd)"
+printf 'Environment:       %s\n' "$ENV_DIR"
+printf 'Notebook:          %s\n' "$NOTEBOOK"
+
+if [[ "$ENV_CREATED" == true ]]; then
+  echo "Created:           .env"
+else
+  echo "Existing:          .env"
+fi
+
+if [[ -n "$REQUIREMENTS" ]]; then
+  printf 'Requirements:      %s\n' "$REQUIREMENTS"
+fi
+
+echo
+echo "Activate:"
+printf '  cd "%s" && source "%s/bin/activate"\n' "$WORK_DIR" "$ENV_DIR"
+
+echo
+echo "Launch JupyterLab:"
+printf '  cd "%s" && "%s/bin/jupyter" lab "%s"\n' \
+  "$WORK_DIR" "$ENV_DIR" "$NOTEBOOK"
