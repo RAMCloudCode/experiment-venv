@@ -8,7 +8,17 @@ The script requires Bash, Python 3, the standard-library `venv` module, and inte
 
 ## Installation
 
-Copy the script to a directory on your `PATH` and make it executable:
+Run the installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/RAMCloudCode/experiment-venv/main/install.sh | sh
+```
+
+It installs to `/usr/local/bin` when writable and otherwise falls back to
+`~/.local/bin`, adding that directory to your shell profile when necessary.
+
+Alternatively, copy the script manually to a directory on your `PATH` and make
+it executable:
 
 ```bash
 mkdir -p ~/.local/bin
